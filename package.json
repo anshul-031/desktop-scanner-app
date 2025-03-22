@@ -1,0 +1,51 @@
+{
+  "name": "aadhaar-scanner-service",
+  "version": "1.0.0",
+  "description": "Desktop scanner service for Aadhaar QR code scanning",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "npm run build && electron .",
+    "build": "tsc && cp src/index.html dist/ && cp src/demo-scan.jpg dist/",
+    "dev": "tsc --watch",
+    "dist": "electron-builder",
+    "postinstall": "electron-builder install-app-deps",
+    "check-deps": "tsc -p src/check-deps.tsconfig.json && node dist/check-deps.js",
+    "prestart": "npm run check-deps"
+  },
+  "build": {
+    "appId": "com.aadhaar.scanner",
+    "mac": {
+      "category": "public.app-category.utilities"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    }
+  },
+  "keywords": [
+    "aadhaar",
+    "scanner",
+    "desktop"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.0.0",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0",
+    "typescript": "^5.8.2"
+  }
+}

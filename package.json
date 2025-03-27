@@ -5,7 +5,7 @@
   "main": "dist/main.js",
   "scripts": {
     "start": "npm run build && electron .",
-    "build": "tsc && cp src/index.html dist/ && cp src/demo-scan.jpg dist/",
+    "build": "tsc && copy src\\index.html dist\\ && copy src\\demo-scan.jpg dist\\ && copy src\\scan-detect.ps1 dist\\ && copy src\\scan.ps1 dist\\",
     "dev": "tsc --watch",
     "dist": "electron-builder",
     "postinstall": "electron-builder install-app-deps",

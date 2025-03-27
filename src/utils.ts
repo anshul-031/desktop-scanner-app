@@ -32,8 +32,10 @@ const parseSANEDeviceLine = (line: string): ScannerDevice | null => {
 export const listScanners = (): Promise<ScannerDevice[]> => {
   return new Promise((resolve) => {
     if (process.platform === 'win32') {
-      // Windows scanner detection
-      const command = `powershell "Get-WmiObject Win32_PnPEntity | Where-Object{$_.Caption -match 'scanner'} | Select-Object Caption,DeviceID,Manufacturer,Description | ConvertTo-Json"`;
+      // Windows scanner detection using the comprehensive PowerShell script
+      const scriptPath = require('path').join(__dirname, 'scan-detect.ps1');
+      const command = `powershell -ExecutionPolicy Bypass -File "${scriptPath}"`;
+      
       exec(command, (error, stdout) => {
         if (error) {
           console.error('Error listing Windows scanners:', error);
@@ -41,13 +43,16 @@ export const listScanners = (): Promise<ScannerDevice[]> => {
           return;
         }
         try {
-          const devices = JSON.parse(stdout.trim() || '[]');
-          const scanners = Array.isArray(devices) ? devices : [devices];
-          resolve(scanners.map((device: any) => ({
+          const devices = JSON.parse(stdout.substring(stdout.lastIndexOf('['))|| '[]');
+          resolve(devices.map((device: any) => ({
             id: device.DeviceID,
-            name: device.Caption,
-            model: device.Description || device.Caption,
-            rawInfo: JSON.stringify(device)
+            name: device.Name,
+            model: device.Description || device.Type,
+            rawInfo: JSON.stringify({
+              ...device,
+              source: device.Source,
+              status: device.Status
+            })
           })));
         } catch (e) {
           console.error('Error parsing Windows scanner list:', e);
@@ -102,22 +107,20 @@ const escapeShellArg = (arg: string): string => {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 };
 
-export const constructScanCommand = (deviceId: string, outputPath: string): string => {
+export const constructScanCommand = (deviceId: string, outputPath?: string): string => {
   if (process.platform === 'win32') {
-    return `powershell "
-      try {
-        $deviceManager = New-Object -ComObject WIA.DeviceManager;
-        $device = $deviceManager.DeviceInfos | Where-Object { $_.DeviceID -eq '${deviceId}' } | ForEach-Object { $_.Connect() };
-        $scanner = $device.Items[1];
-        $image = $scanner.Transfer();
-        $image.SaveFile('${outputPath}');
-        exit 0;
-      } catch {
-        Write-Error $_.Exception.Message;
-        exit 1;
-      }
-    "`;
+    // Handle different scanner ID formats and clean up any double backslashes
+    const sanitizedDeviceId = deviceId.replace(/\\\\/g, '\\');
+    const scriptPath = require('path').join(__dirname, 'scan.ps1');
+
+    // For Windows, outputPath is ignored as the PowerShell script handles temp files
+    return `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}" -deviceId "${sanitizedDeviceId}" -outputPath "unused"`;
   } else {
+    // For SANE systems, outputPath is required
+    if (!outputPath) {
+      throw new Error('outputPath is required for non-Windows systems');
+    }
+
     // For SANE:
     // 1. Escape device ID and output path
     // 2. Add --progress for status updates

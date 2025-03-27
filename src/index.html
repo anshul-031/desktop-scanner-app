@@ -61,6 +61,14 @@
     <div id="status" class="status running">
       Service is running on ws://localhost:3500
     </div>
+    
+    <div id="scannerList" style="margin: 20px 0; padding: 15px; background: #fff; border: 1px solid #ddd; border-radius: 4px;">
+      <h2 style="margin-top: 0; color: #333; font-size: 1.2em;">Available Scanners</h2>
+      <div id="scannerContent">
+        <div style="color: #666;">Searching for scanners...</div>
+      </div>
+    </div>
+
     <div class="log" id="log">
       <div class="log-entry info">Service started...</div>
     </div>
@@ -76,6 +84,85 @@
       log.scrollTop = log.scrollHeight;
     }
 
+    function updateScannerList(scanners) {
+      const scannerContent = document.getElementById('scannerContent');
+      if (!scanners || scanners.length === 0) {
+        scannerContent.innerHTML = '<div style="color: #c62828;">No scanners found. Please connect a scanner and refresh.</div>';
+        return;
+      }
+
+      const scannerHtml = scanners.map(scanner => `
+        <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 4px;">
+          <div style="font-weight: bold; color: #333;">${scanner.name}</div>
+          <div style="color: #666; font-size: 0.9em;">Model: ${scanner.model}</div>
+          <div style="color: #666; font-size: 0.9em;">ID: ${scanner.id}</div>
+          <pre style="font-size: 0.8em; margin: 5px 0; color: #888; white-space: pre-wrap;">${JSON.stringify(scanner.rawInfo, null, 2)}</pre>
+        </div>
+      `).join('');
+
+      scannerContent.innerHTML = scannerHtml;
+    }
+
+    // Set up WebSocket connection
+    const ws = new WebSocket('ws://localhost:3500');
+    
+    ws.onopen = () => {
+      addLogEntry('Connected to scanner service');
+      // Request scanner list immediately
+      ws.send(JSON.stringify({ type: 'get-scanners' }));
+    };
+
+    ws.onclose = () => {
+      addLogEntry('Disconnected from scanner service', 'error');
+      document.getElementById('status').className = 'status error';
+      document.getElementById('status').textContent = 'Service connection lost';
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('Received:', data);
+
+        switch (data.type) {
+          case 'scanners-list':
+            updateScannerList(data.data);
+            addLogEntry(`Found ${data.data.length} scanner(s)`);
+            break;
+          case 'error':
+            addLogEntry(data.error, 'error');
+            break;
+          case 'scan-complete':
+            addLogEntry(`Scan completed: ${data.data.success ? 'Success' : 'Failed'}`, data.data.success ? 'info' : 'error');
+            break;
+        }
+      } catch (error) {
+        addLogEntry('Error processing message: ' + error.message, 'error');
+      }
+    };
+
+    ws.onerror = (error) => {
+      addLogEntry('WebSocket error: ' + error.message, 'error');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('Received:', data);
+
+        switch (data.type) {
+          case 'scanners-list':
+            updateScannerList(data.data);
+            addLogEntry(`Found ${data.data.length} scanner(s)`);
+            break;
+          case 'error':
+            addLogEntry(data.error, 'error');
+            break;
+        }
+      } catch (error) {
+        addLogEntry('Error processing message: ' + error.message, 'error');
+      }
+    };
+
     // Listen for console logs
     const originalConsoleLog = console.log;
     const originalConsoleError = console.error;
@@ -89,6 +176,13 @@
       originalConsoleError.apply(console, args);
       addLogEntry(args.join(' '), 'error');
     };
+
+    // Request scanner list every 5 seconds
+    setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'get-scanners' }));
+      }
+    }, 5000);
   </script>
 </body>
 </html>

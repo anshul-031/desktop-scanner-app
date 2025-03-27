@@ -54,50 +54,86 @@ const createDemoScan = async (): Promise<string> => {
 };
 
 // Perform scan operation
-const performScan = async (deviceId: string): Promise<{ path: string; success: boolean; base64?: string }> => {
+const performScan = async (deviceId: string): Promise<{ success: boolean; base64: string }> => {
   // Handle demo scanner
   if (deviceId === 'demo-scanner') {
     try {
       const demoPath = await createDemoScan();
-      return { path: demoPath, success: true };
+      const demoImage = await fs.promises.readFile(demoPath);
+      const base64Data = demoImage.toString('base64');
+      return {
+        success: true,
+        base64: `data:image/jpeg;base64,${base64Data}`
+      };
     } catch (error) {
       logger.error('Error creating demo scan:', error);
       throw new Error('Failed to create demo scan');
     }
   }
 
-  const outputPath = path.join(os.tmpdir(), `scan-${Date.now()}.jpg`);
-  logger.info('Starting scan to:', outputPath);
+  logger.info('Starting scan...');
 
   return new Promise((resolve, reject) => {
-    const command = constructScanCommand(deviceId, outputPath);
-    logger.info('Executing scan command:', command);
+    // Since we're not using temp files anymore, we don't need outputPath
+    const command = constructScanCommand(deviceId, 'unused');
+    
+    let isHandled = false;
+    let scanOutput = '';
 
-    exec(command, (error, stdout, stderr) => {
+    const scanTimeout = setTimeout(() => {
+      if (!isHandled) {
+        isHandled = true;
+        logger.error('Scan timeout after 120 seconds');
+        reject(new Error('Scanner timeout - no response from device'));
+      }
+    }, 120000);
+
+    logger.info('Executing scan command...');
+    const scanProcess = exec(command, { maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
+      clearTimeout(scanTimeout);
+      
+      if (isHandled) return;
+      isHandled = true;
+
       if (error) {
-        logger.error('Scan error:', error);
-        logger.error('Scan stderr:', stderr);
-        reject(error);
+        const errorMessage = stderr.toString() || error.message;
+        logger.error('Scan error:', errorMessage);
+
+        if (errorMessage.includes('Result code: 0x80210015')) {
+          reject(new Error('Scanner is in use by another application'));
+        } else if (errorMessage.includes('Result code: 0x80210006')) {
+          reject(new Error('No document in scanner'));
+        } else if (errorMessage.includes('Access is denied')) {
+          reject(new Error('Access denied - please run as administrator'));
+        } else {
+          reject(new Error(errorMessage));
+        }
         return;
       }
-      if (stderr) {
-        logger.info('Scan stderr (info):', stderr);
-      }
-      if (stdout) {
-        logger.info('Scan stdout:', stdout);
-      }
-      logger.info('Scan completed successfully');
 
-      // Read the file as base64
-      fs.readFile(outputPath, { encoding: 'base64' }, (err, data) => {
-        if (err) {
-          logger.error('Error reading file as base64:', err);
-          reject(err);
-          return;
-        }
-        resolve({ path: outputPath, success: true, base64: data });
+      // Process output from scanner - get the base64 data
+      const output = stdout.toString().trim();
+      const base64Match = output.match(/(data:image\/jpeg;base64,[\w+/=]+)/);
+      if (!base64Match) {
+        reject(new Error('Invalid image data received from scanner'));
+        return;
+      }
+
+      resolve({
+        success: true,
+        base64: base64Match[1]
       });
     });
+
+    // Handle process output for logging
+    if (scanProcess.stdout) {
+      scanProcess.stdout.on('data', (data: Buffer) => {
+        const message = data.toString().trim();
+        if (message.startsWith('[SCAN]')) {
+          logger.info(message);
+        }
+      });
+    }
   });
 };
 
@@ -116,42 +152,98 @@ const createWindow = () => {
   mainWindow.webContents.openDevTools();
 };
 
+// Custom WebSocket type with cache
+interface ExtendedWebSocket extends WebSocket {
+scannerCache?: string;
+lastScannerRequest?: number;
+}
+
 // Handle WebSocket messages
-const handleWebSocketConnection = (ws: WebSocket) => {
-  logger.info('Client connected');
+const handleWebSocketConnection = (ws: ExtendedWebSocket) => {
+logger.info('Client connected');
 
-  const sendError = (error: string) => {
-    ws.send(JSON.stringify({
-      type: 'error',
-      error
-    }));
-  };
+// Initialize scanner cache
+ws.scannerCache = '';
+ws.lastScannerRequest = 0;
 
-  ws.on('message', async (message: string) => {
-    try {
-      const data = JSON.parse(message);
+const sendError = (error: string) => {
+  ws.send(JSON.stringify({
+    type: 'error',
+    error
+  }));
+};
+
+const SCANNER_REQUEST_THROTTLE = 2000; // 2 seconds
+
+ws.on('message', async (message: string) => {
+  try {
+    const data = JSON.parse(message);
+
+    // Only log non-scanner-list messages
+    if (data.type !== 'get-scanners') {
       logger.info('Received message:', data);
+    }
 
-      switch (data.type) {
-        case 'get-scanners':
+    switch (data.type) {
+      case 'get-scanners':
+        // Throttle scanner list requests
+        const now = Date.now();
+        if (now - (ws.lastScannerRequest || 0) < SCANNER_REQUEST_THROTTLE) {
+          return;
+        }
+        ws.lastScannerRequest = now;
           try {
             const scanners = await listScanners();
-            logger.info('Raw scanner list:', scanners);
+            
+            // Filter out invalid entries and duplicates
+            const validScanners = scanners
+              .filter(s => s && s.id && s.name && s.rawInfo && s.rawInfo !== '{}')
+              .reduce((unique: ScannerDevice[], scanner) => {
+                // Keep only WIA or first occurrence
+                const existingIndex = unique.findIndex(s => s.name === scanner.name);
+                if (existingIndex >= 0) {
+                  // Replace only if new one is WIA and existing isn't
+                  const existingIsWIA = unique[existingIndex].rawInfo.includes('"Source":"WIA"');
+                  const newIsWIA = scanner.rawInfo.includes('"Source":"WIA"');
+                  if (newIsWIA && !existingIsWIA) {
+                    unique[existingIndex] = scanner;
+                  }
+                } else {
+                  unique.push(scanner);
+                }
+                return unique;
+              }, []);
 
-            const deviceList = scanners.length > 0 ? scanners : [{
+            const deviceList = validScanners.length > 0 ? validScanners : [{
               id: 'demo-scanner',
               name: 'Demo Scanner',
               model: 'Demo Model (No physical scanner found)',
               rawInfo: 'Demo scanner for testing when no physical scanner is available'
             }];
 
-            logger.info('Processed scanner list:', 
-              deviceList.map(s => ({ id: s.id, name: s.name }))
-            );
+            // Sort by WIA first, then by name
+            const sortedDevices = deviceList.sort((a, b) => {
+              const aIsWIA = a.rawInfo.includes('"Source":"WIA"');
+              const bIsWIA = b.rawInfo.includes('"Source":"WIA"');
+              if (aIsWIA !== bIsWIA) return aIsWIA ? -1 : 1;
+              return a.name.localeCompare(b.name);
+            });
+
+            // Cache scanner list to prevent duplicate logging
+            const scannerKey = sortedDevices.map(s => {
+              const source = s.rawInfo.includes('"Source":"WIA"') ? 'WIA' : 'OTHER';
+              return `${s.id}:${source}`;
+            }).join(',');
+            if (ws.scannerCache !== scannerKey) {
+              ws.scannerCache = scannerKey;
+              logger.info('Available scanners:\n' +
+                sortedDevices.map(s => `${s.name} (${s.id})`).join('\n')
+              );
+            }
 
             ws.send(JSON.stringify({
               type: 'scanners-list',
-              data: deviceList
+              data: sortedDevices
             }));
           } catch (error) {
             logger.error('Error listing scanners:', error);
@@ -165,29 +257,70 @@ const handleWebSocketConnection = (ws: WebSocket) => {
               throw new Error('No device ID provided');
             }
 
-            logger.info('Starting scan with device:', data.deviceId);
-            const scanResult = await performScan(data.deviceId);
-            logger.info('Scan completed:', scanResult);
+            // Get latest scanner list
+            const scanners = await listScanners();
+            let scanDeviceId = data.deviceId;
 
-            // Verify the scanned file exists
+            // If we get a non-WIA device ID, try to find corresponding WIA device
+            if (!data.deviceId.includes('6BDD1FC6-810F-11D0-BEC7-08002BE2092F')) {
+              const wiaDevice = scanners.find((d: ScannerDevice) =>
+                d.rawInfo.includes('"Source":"WIA"') &&
+                d.rawInfo.includes('"Status":"Connected"')
+              );
+              if (wiaDevice) {
+                logger.info('Using WIA device instead of:', data.deviceId);
+                scanDeviceId = wiaDevice.id;
+              }
+            }
+
+            logger.info('Starting scan with device:', scanDeviceId);
+            
             try {
-              await fs.promises.access(scanResult.path);
-              logger.info('Scanned file verified:', scanResult.path);
+              const scanResult = await performScan(scanDeviceId);
+              
+              if (!scanResult || !scanResult.base64) {
+                throw new Error('Scanner did not return any data');
+              }
+
               ws.send(JSON.stringify({
                 type: 'scan-complete',
                 data: {
-                  success: scanResult.success,
-                  path: scanResult.path,
+                  success: true,
                   base64: scanResult.base64
                 }
               }));
-            } catch (fileError) {
-              logger.error('Scanned file not found:', fileError);
-              throw new Error('Failed to save scanned image');
+              
+            } catch (error) {
+              logger.error('Scan error:', error);
+              
+              // Parse PowerShell error messages
+              const errorStr = error instanceof Error ? error.message : String(error);
+              if (errorStr.includes('Access is denied')) {
+                sendError('Access denied. Please run the application as administrator.');
+              } else if (errorStr.includes('Device not found') || errorStr.includes('No compatible WIA scanner')) {
+                sendError('Scanner not found or not compatible. Please check if it is properly connected.');
+              } else if (errorStr.includes('Device is busy') || errorStr.includes('being used by another application')) {
+                sendError('Scanner is busy or in use by another application. Please wait and try again.');
+              } else if (errorStr.includes('empty file')) {
+                sendError('Scanner failed to produce a valid image. Please check if there is a document in the scanner.');
+              } else {
+                sendError(`Scanning failed: ${errorStr}`);
+              }
             }
           } catch (error) {
             logger.error('Scan failed:', error);
-            sendError(error instanceof Error ? error.message : 'Scan failed');
+            const errorMessage = error instanceof Error ? error.message : 'Scan failed';
+            
+            // Provide more helpful error messages
+            if (errorMessage.toLowerCase().includes('access') || errorMessage.toLowerCase().includes('permission')) {
+              sendError('Scanner access denied. Please ensure you have administrator privileges or proper permissions.');
+            } else if (errorMessage.toLowerCase().includes('busy')) {
+              sendError('Scanner is busy or in use by another application.');
+            } else if (errorMessage.toLowerCase().includes('not found') || errorMessage.toLowerCase().includes('no scanner')) {
+              sendError('Scanner not found. Please check if it is properly connected and powered on.');
+            } else {
+              sendError(`Scanning failed: ${errorMessage}. Please check scanner connection and try again.`);
+            }
           }
           break;
 

@@ -54,7 +54,7 @@ const createDemoScan = async (): Promise<string> => {
 };
 
 // Perform scan operation
-const performScan = async (deviceId: string): Promise<{ success: boolean; base64: string }> => {
+const performScan = async (deviceId: string, settings?: { resolution?: number; area?: string; colorMode?: string }): Promise<{ success: boolean; base64: string }> => {
   // Handle demo scanner
   if (deviceId === 'demo-scanner') {
     try {
@@ -74,8 +74,8 @@ const performScan = async (deviceId: string): Promise<{ success: boolean; base64
   logger.info('Starting scan...');
 
   return new Promise((resolve, reject) => {
-    // Since we're not using temp files anymore, we don't need outputPath
-    const command = constructScanCommand(deviceId, 'unused');
+    // Construct command with settings
+    const command = constructScanCommand(deviceId, 'unused', settings);
     
     let isHandled = false;
     let scanOutput = '';
@@ -276,7 +276,14 @@ ws.on('message', async (message: string) => {
             logger.info('Starting scan with device:', scanDeviceId);
             
             try {
-              const scanResult = await performScan(scanDeviceId);
+              // Extract settings from the scan request
+              const scanSettings = data.settings ? {
+                resolution: data.settings.resolution,
+                area: data.settings.area,
+                colorMode: data.settings.colorMode
+              } : undefined;
+
+              const scanResult = await performScan(scanDeviceId, scanSettings);
               
               if (!scanResult || !scanResult.base64) {
                 throw new Error('Scanner did not return any data');

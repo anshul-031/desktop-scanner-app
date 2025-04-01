@@ -3,8 +3,14 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$deviceId,
     
-    [Parameter(Mandatory=$true)]
-    [string]$outputPath  # Kept for compatibility but not used
+    [Parameter(Mandatory=$false)]
+    [int]$resolution = 300,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$area = "A4",
+    
+    [Parameter(Mandatory=$false)]
+    [string]$colorMode = "Color"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,11 +81,46 @@ function Set-ScannerProperties {
     
     Write-Host '[SCAN] Configuring scanner...'
     
-    $properties = @{
-        'Horizontal Resolution' = 300
-        'Vertical Resolution' = 300
-        'Current Intent' = 1
+    # Map color modes to WIA values
+    $colorModeMap = @{
+        'Color' = 1        # WIA_IPS_CUR_INTENT_COLOR
+        'Grayscale' = 2    # WIA_IPS_CUR_INTENT_GRAYSCALE
+        'BlackAndWhite' = 4 # WIA_IPS_CUR_INTENT_TEXT
     }
+
+    # Map paper sizes (in inches)
+    $pageSizeMap = @{
+        'A4' = @{width = 8.27; height = 11.69}
+        'A5' = @{width = 5.83; height = 8.27}
+        'A6' = @{width = 4.13; height = 5.83}
+        'Legal' = @{width = 8.5; height = 14}
+        'Letter' = @{width = 8.5; height = 11}
+    }
+
+    # Get page dimensions
+    $pageSize = $pageSizeMap[$area]
+    if (-not $pageSize) {
+        Write-Host "[SCAN] Warning: Unknown page size '$area', defaulting to A4"
+        $pageSize = $pageSizeMap['A4']
+    }
+
+    # Convert inches to 1000ths of an inch (WIA's unit)
+    $widthInThousandths = [int]($pageSize.width * 1000)
+    $heightInThousandths = [int]($pageSize.height * 1000)
+
+    # Build properties dictionary
+    $properties = @{
+        'Horizontal Resolution' = $resolution
+        'Vertical Resolution' = $resolution
+        'Horizontal Extent' = $widthInThousandths
+        'Vertical Extent' = $heightInThousandths
+        'Current Intent' = $colorModeMap[$colorMode]
+    }
+
+    Write-Host "[SCAN] Setting properties:"
+    Write-Host "[SCAN] Resolution: $resolution DPI"
+    Write-Host "[SCAN] Page Size: $area ($($pageSize.width)x$($pageSize.height) inches)"
+    Write-Host "[SCAN] Color Mode: $colorMode"
 
     foreach ($prop in $properties.GetEnumerator()) {
         try {

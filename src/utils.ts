@@ -107,14 +107,27 @@ const escapeShellArg = (arg: string): string => {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 };
 
-export const constructScanCommand = (deviceId: string, outputPath?: string): string => {
+export interface ScannerSettings {
+  resolution?: number;
+  area?: string;
+  colorMode?: string;
+}
+
+export const constructScanCommand = (deviceId: string, outputPath: string | undefined, settings?: ScannerSettings): string => {
   if (process.platform === 'win32') {
     // Handle different scanner ID formats and clean up any double backslashes
     const sanitizedDeviceId = deviceId.replace(/\\\\/g, '\\');
     const scriptPath = require('path').join(__dirname, 'scan.ps1');
 
-    // For Windows, outputPath is ignored as the PowerShell script handles temp files
-    return `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}" -deviceId "${sanitizedDeviceId}" -outputPath "unused"`;
+    // Build command with settings
+    const command = [`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`,
+      `-deviceId "${sanitizedDeviceId}"`,
+      settings?.resolution ? `-resolution ${settings.resolution}` : '',
+      settings?.area ? `-area "${settings.area}"` : '',
+      settings?.colorMode ? `-colorMode "${settings.colorMode}"` : ''
+    ].filter(Boolean).join(' ');
+    
+    return command;
   } else {
     // For SANE systems, outputPath is required
     if (!outputPath) {

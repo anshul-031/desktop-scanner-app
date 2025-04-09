@@ -4,8 +4,11 @@
   "description": "Desktop scanner service for Aadhaar QR code scanning",
   "main": "dist/main.js",
   "scripts": {
+    "build:win": "npm run build && electron-builder --win",
+    "build:mac": "npm run build && electron-builder --mac",
+    "build:all": "npm run build && electron-builder -mw",
     "start": "npm run build && electron .",
-    "build": "tsc && copy src\\index.html dist\\ && copy src\\demo-scan.jpg dist\\ && copy src\\scan-detect.ps1 dist\\ && copy src\\scan.ps1 dist\\",
+    "build": "tsc && node scripts/copy-assets.js",
     "dev": "tsc --watch",
     "dist": "electron-builder",
     "postinstall": "electron-builder install-app-deps",
